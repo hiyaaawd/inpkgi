@@ -1,3 +1,18 @@
+<<<<<<< HEAD
+# Compiled binaries and objects
+*.o
+*.a
+*.so
+inigo
+inipkg
+
+# Editor and OS junk
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+=======
 # Prerequisites
 *.d
 
@@ -53,3 +68,4 @@ dkms.conf
 
 # debug information files
 *.dwo
+>>>>>>> d44b5ef1151973144e90600a8c89cfa5335a5c95
