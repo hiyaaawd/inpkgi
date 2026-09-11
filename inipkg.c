@@ -4,38 +4,110 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <sys/stat.h>
 
-int pullpkg(const char *target) {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "curl -L -sSf -O %s", target);
-    int pullstat = system(cmd);
+static int run_command(char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
 
-    if (pullstat == -1) {
-        printf("failed to run shell\n");
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        return -1;
+    }
+
+    if (!WIFEXITED(status)) {
+        return -1;
+    }
+
+    return WEXITSTATUS(status);
+}
+
+static int is_skipped_name(const char *name) {
+    return strcmp(name, "test_vm") == 0 ||
+           strcmp(name, "inigo") == 0 ||
+           strcmp(name, "linux-7.2.4") == 0 ||
+           strcmp(name, "inipkgws") == 0;
+}
+
+static int is_directory(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int is_archive_name(const char *name) {
+    size_t len = strlen(name);
+    return (len > 4 && strcmp(name + len - 4, ".tar") == 0) ||
+           (len > 7 && strcmp(name + len - 7, ".tar.gz") == 0) ||
+           (len > 4 && strcmp(name + len - 4, ".tgz") == 0) ||
+           (len > 7 && strcmp(name + len - 7, ".tar.xz") == 0);
+}
+
+static int find_downloaded_archive(char *archive, size_t max_len) {
+    DIR *d = opendir(".");
+    if (!d) {
         return 1;
-    } else {
-        int status = WEXITSTATUS(pullstat);
-        if (status == 127) {
-            printf("no curl binary\n");
-            return 1;
-        } else if (status != 0) {
-            printf("invalid target!\n");
-            return 1;
-        } else {
-            printf("downloaded successfully\n");
+    }
+
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+        if (dir->d_name[0] == '.') {
+            continue;
+        }
+        if (is_archive_name(dir->d_name)) {
+            snprintf(archive, max_len, "%s", dir->d_name);
+            closedir(d);
             return 0;
         }
     }
+
+    closedir(d);
+    return 1;
 }
 
-void extract(void) {
-    int stat = system("tar -xf *.tar*");
-    int statu = WEXITSTATUS(stat);
-    if (statu == 0) {
-        system("rm -f *.tar *.tar.gz *.tgz");
-    } else {
-        printf("error extracting file!\n");
+int pullpkg(const char *target) {
+    char *const args[] = {"curl", "-L", "-sSf", "-O", "--", (char *)target, NULL};
+    int pullstat = run_command(args);
+
+    if (pullstat < 0) {
+        printf("failed to run shell\n");
+        return 1;
     }
+
+    if (pullstat == 127) {
+        printf("no curl binary\n");
+        return 1;
+    }
+    if (pullstat != 0) {
+        printf("invalid target!\n");
+        return 1;
+    }
+
+    printf("downloaded successfully\n");
+    return 0;
+}
+
+int extract(char *archive, size_t archive_len) {
+    if (find_downloaded_archive(archive, archive_len) != 0) {
+        printf("no archive file found\n");
+        return 1;
+    }
+
+    char *const args[] = {"tar", "-xf", archive, NULL};
+    int status = run_command(args);
+    if (status != 0) {
+        printf("error extracting file!\n");
+        return 1;
+    }
+
+    unlink(archive);
+    return 0;
 }
 
 void enter_extracted_dir(char *found_dir, size_t max_len) {
@@ -44,38 +116,29 @@ void enter_extracted_dir(char *found_dir, size_t max_len) {
     struct dirent *dir;
     
     while ((dir = readdir(d)) != NULL) {
-        if (dir->d_type == DT_DIR && dir->d_name[0] != '.') {
-            if (strcmp(dir->d_name, "test_vm") == 0 || 
-                strcmp(dir->d_name, "inigo") == 0 || 
-                strcmp(dir->d_name, "linux-7.2.4") == 0 ||
-                strcmp(dir->d_name, "inipkgws") == 0) {
-                continue;
-            }
-            
-            char path[512];
-            snprintf(path, sizeof(path), "%s/Makefile", dir->d_name);
-            if (access(path, F_OK) == 0) {
-                strncpy(found_dir, dir->d_name, max_len);
-                chdir(dir->d_name);
-                closedir(d);
-                return;
-            }
+        if (dir->d_name[0] == '.' || is_skipped_name(dir->d_name) || !is_directory(dir->d_name)) {
+            continue;
         }
-    }
-    rewinddir(d);
-    while ((dir = readdir(d)) != NULL) {
-        if (dir->d_type == DT_DIR && dir->d_name[0] != '.') {
-            if (strcmp(dir->d_name, "test_vm") == 0 || 
-                strcmp(dir->d_name, "inigo") == 0 || 
-                strcmp(dir->d_name, "linux-7.2.4") == 0 ||
-                strcmp(dir->d_name, "inipkgws") == 0) {
-                continue;
-            }
-            strncpy(found_dir, dir->d_name, max_len);
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/Makefile", dir->d_name);
+        if (access(path, F_OK) == 0) {
+            snprintf(found_dir, max_len, "%s", dir->d_name);
             chdir(dir->d_name);
             closedir(d);
             return;
         }
+    }
+    rewinddir(d);
+    while ((dir = readdir(d)) != NULL) {
+        if (dir->d_name[0] == '.' || is_skipped_name(dir->d_name) || !is_directory(dir->d_name)) {
+            continue;
+        }
+
+        snprintf(found_dir, max_len, "%s", dir->d_name);
+        chdir(dir->d_name);
+        closedir(d);
+        return;
     }
     closedir(d);
 }
@@ -83,8 +146,9 @@ void enter_extracted_dir(char *found_dir, size_t max_len) {
 int check_build_config(void) {
     if (access("Makefile", F_OK) == 0 || access("configure", F_OK) == 0 || access("CMakeLists.txt", F_OK) == 0) {
         printf("found build config compiling...\n");
-        system("make");
-        return 0;
+        char *const args[] = {"make", NULL};
+        int status = run_command(args);
+        return status == 0 ? 0 : 2;
     } else {
         printf("no make config found\n");
         return 2;
@@ -101,7 +165,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    extract();
+    char archive[512] = {0};
+    if (extract(archive, sizeof(archive)) != 0) {
+        return 1;
+    }
 
     char ext_dir[512] = {0};
     enter_extracted_dir(ext_dir, sizeof(ext_dir));
@@ -110,9 +177,8 @@ int main(int argc, char *argv[]) {
 
     if (strlen(ext_dir) > 0) {
         chdir("..");
-        char clean_cmd[512];
-        snprintf(clean_cmd, sizeof(clean_cmd), "rm -rf %s", ext_dir);
-        system(clean_cmd);
+        char *const args[] = {"rm", "-rf", "--", ext_dir, NULL};
+        run_command(args);
         printf("cleaned up build directory: %s\n", ext_dir);
     }
 
