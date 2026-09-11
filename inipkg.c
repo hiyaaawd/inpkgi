@@ -76,7 +76,7 @@ int pullpkg(const char *target) {
     int pullstat = run_command(args);
 
     if (pullstat < 0) {
-        printf("failed to run shell\n");
+        printf("failed to run command\n");
         return 1;
     }
 
